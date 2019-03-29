@@ -2028,6 +2028,18 @@ class Zeroconf(QuietLogger):
         for record in msg.answers:
             self.update_record(now, record)
 
+    def _known_answer(self, msg: DNSIncoming, name: str, ttl: int) -> bool:
+        """Check if we would be responding with a record which is already known, indicated
+        by the fact it has been included in the query answers. This has been implemented
+        for PTR records only"""
+        known_answer = False
+        for answer in msg.answers:
+            if answer.type == _TYPE_PTR and answer.class_ == _CLASS_IN and \
+                    answer.name == name and answer.ttl >= ttl / 2:
+                known_answer = True
+                break
+        return known_answer
+
     def handle_query(self, msg: DNSIncoming, addr: str, port: int) -> None:
         """Deal with incoming query packets.  Provides a response if
         possible."""
@@ -2044,6 +2056,8 @@ class Zeroconf(QuietLogger):
             if question.type == _TYPE_PTR:
                 if question.name == "_services._dns-sd._udp.local.":
                     for stype in self.servicetypes.keys():
+                        if self._known_answer(msg, stype, _DNS_TTL):
+                            continue
                         if out is None:
                             out = DNSOutgoing(_FLAGS_QR_RESPONSE | _FLAGS_AA)
                         out.add_answer(msg, DNSPointer(
@@ -2051,6 +2065,8 @@ class Zeroconf(QuietLogger):
                             _CLASS_IN, _DNS_TTL, stype))
                 for service in self.services.values():
                     if question.name == service.type:
+                        if self._known_answer(msg, service.name, service.ttl):
+                            continue
                         if out is None:
                             out = DNSOutgoing(_FLAGS_QR_RESPONSE | _FLAGS_AA)
                         out.add_answer(msg, DNSPointer(
@@ -2058,6 +2074,7 @@ class Zeroconf(QuietLogger):
                             _CLASS_IN, service.ttl, service.name))
             else:
                 try:
+
                     if out is None:
                         out = DNSOutgoing(_FLAGS_QR_RESPONSE | _FLAGS_AA)
 
