@@ -1376,13 +1376,23 @@ class ServiceBrowser(RecordUpdateListener, threading.Thread):
                 return
             now = current_time_millis()
             if self.next_time <= now:
-                out = DNSOutgoing(_FLAGS_QR_QUERY, multicast=self.multicast)
-                out.add_question(DNSQuestion(self.type, _TYPE_PTR, _CLASS_IN))
-                for record in self.services.values():
-                    if not record.is_stale(now):
-                        out.add_answer_at_time(record, now)
+                suppress_query = False
+                if self.type in self.zc.query_suppression:
+                    msg, rtime = self.zc.query_suppression[self.type]
+                    if rtime > (self.next_time - self.delay):
+                        suppress_query = True
+                        for record in msg.answers:
+                            if record.alias.lower() not in self.services:
+                                suppress_query = False
+                                break
+                if not suppress_query:
+                    out = DNSOutgoing(_FLAGS_QR_QUERY, multicast=self.multicast)
+                    out.add_question(DNSQuestion(self.type, _TYPE_PTR, _CLASS_IN))
+                    for record in self.services.values():
+                        if not record.is_stale(now):
+                            out.add_answer_at_time(record, now)
 
-                self.zc.send(out, addr=self.addr, port=self.port)
+                    self.zc.send(out, addr=self.addr, port=self.port)
                 self.next_time = now + self.delay
                 self.delay = min(_BROWSER_BACKOFF_LIMIT * 1000, self.delay * 2)
 
@@ -1779,6 +1789,8 @@ class Zeroconf(QuietLogger):
 
         self.cache = DNSCache()
 
+        self.query_suppression = {}  # type: Dict[str, (DNSIncoming, int)]
+
         self.condition = threading.Condition()
 
         self.engine = Engine(self)
@@ -1882,6 +1894,7 @@ class Zeroconf(QuietLogger):
                 self.servicetypes[info.type] -= 1
             else:
                 del self.servicetypes[info.type]
+                self.query_suppression.pop(info.type, None)
         except Exception as e:  # TODO stop catching all Exceptions
             log.exception('Unknown error, possibly benign: %r', e)
         now = current_time_millis()
@@ -2054,6 +2067,8 @@ class Zeroconf(QuietLogger):
 
         for question in msg.questions:
             if question.type == _TYPE_PTR:
+                if question.name in self.servicetypes:
+                    self.query_suppression[question.name] = (msg, current_time_millis())
                 if question.name == "_services._dns-sd._udp.local.":
                     for stype in self.servicetypes.keys():
                         if self._known_answer(msg, stype, _DNS_TTL):
